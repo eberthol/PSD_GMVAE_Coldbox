@@ -1,2 +1,6 @@
+*.DS_Store
 *.root
 *.npz
+*.png
+
+data_eng/WhereToStart.ipynb
