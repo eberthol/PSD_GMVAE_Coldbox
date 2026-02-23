@@ -108,7 +108,7 @@ def _print_cutflow(c):
     print("========================\n")
 
 def build_pulse_dataset(
-    X: np.ndarray,
+    raw_data: np.ndarray,
     *,
     pre: int = 40,
     post: int = 216,
@@ -148,7 +148,7 @@ def build_pulse_dataset(
     verbose: bool = True,
 ):
     """
-    Builds a pulse-level dataset directly from X
+    Builds a pulse-level dataset directly from raw_data
 
     Returns dict with keys:
       pulses_raw: (N,L) raw windows (optional)
@@ -169,7 +169,7 @@ def build_pulse_dataset(
     if use_pos not in ("align", "argmax"):
         raise ValueError("use_pos must be 'align' or 'argmax'")
 
-    n_records, n_samples = X.shape
+    n_records, n_samples = raw_data.shape
     L = pre + post
 
     # Cutflow
@@ -209,7 +209,7 @@ def build_pulse_dataset(
     peak_raw_lmax_list = []
 
     for r in range(n_records):
-        rec = X[r].astype(np.float64, copy=False)
+        rec = raw_data[r].astype(np.float64, copy=False)
 
         # ---- Baseline subtraction ----
         baselineSub_rec, baseline_per_sample, drift_ptp, flagged = fancy_baseline_subtraction_record(
@@ -611,7 +611,7 @@ def plot_peak_position_histogram(
     return pos
 
 def plot_record(
-    X,
+    raw_data,
     pulse_ds,
     *,
     record_index: int,
@@ -639,7 +639,7 @@ def plot_record(
         raise ValueError("windows must be 'sub' or 'raw'")
 
     ri = int(record_index)
-    rec = np.asarray(X[ri], dtype=np.float64)
+    rec = np.asarray(raw_data[ri], dtype=np.float64)
     n = rec.size
 
     # ---- baseline + baseline-subtracted record (prefer stored baseline) ----
@@ -754,8 +754,6 @@ def plot_record(
 
     plt.show()
     return W, idx
-
-
 
 # ---------- diagnostic  ----------
 # to use when extracting with the "align" option
