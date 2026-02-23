@@ -397,6 +397,7 @@ def plot_pulses(
     *,
     waveform: str = "sub",                 # "sub" or "raw"
     use_pos: str = "align",                # "align" or "argmax"
+
     pos_side: str = "none",                # "before", "after", "between", "none"
     pos_cut=None,                          # int or (lo,hi); ignored if pos_side="none"
 
@@ -410,6 +411,7 @@ def plot_pulses(
     max_pulses_to_plot: int | None = 2000,
     show_mean_band: bool = True,
     title: str | None = None,
+    show_plot: bool = True
 ):
     """
     Plot pulses from pulse_ds with optional cuts on:
@@ -422,6 +424,8 @@ def plot_pulses(
     Returns:
       windows: (N_selected, L)
       meta: dict of selected indices and key metadata
+      mean: mean value of the selected pulses
+      std: 1sigma value of the selected pulses
     """
     waveform = str(waveform).strip().lower()
     if waveform not in ("sub", "raw"):
@@ -536,36 +540,37 @@ def plot_pulses(
     std = windows.std(axis=0)
 
     # ---- plot ----
-    fig, (ax_all, ax_mean) = plt.subplots(1, 2, figsize=(16, 5), constrained_layout=True)
-    t = np.arange(L) - pre
+    if show_plot:
+        fig, (ax_all, ax_mean) = plt.subplots(1, 2, figsize=(16, 5), constrained_layout=True)
+        t = np.arange(L) - pre
 
-    ax_all.plot(t, windows_plot.T, linewidth=0.6, alpha=0.15)
-    ax_all.axvline(0, linestyle="--", linewidth=1)
-    ax_all.set_xlabel("Samples relative to window center (0)")
-    ax_all.set_ylabel(f"ADC ({'baseline-subtracted' if waveform=='sub' else 'raw'})")
-    ax_all.grid(True, alpha=0.25)
+        ax_all.plot(t, windows_plot.T, linewidth=0.6, alpha=0.15)
+        ax_all.axvline(0, linestyle="--", linewidth=1)
+        ax_all.set_xlabel("Samples relative to window center (0)")
+        ax_all.set_ylabel(f"ADC ({'baseline-subtracted' if waveform=='sub' else 'raw'})")
+        ax_all.grid(True, alpha=0.25)
 
-    ax_mean.plot(t, mean, linewidth=2.0)
-    ax_mean.axvline(0, linestyle="--", linewidth=1)
-    if show_mean_band:
-        ax_mean.fill_between(t, mean - std, mean + std, alpha=0.15)
-    ax_mean.set_title("Mean pulse (±1σ)" if show_mean_band else "Mean pulse")
-    ax_mean.set_xlabel("Samples relative to window center (0)")
-    ax_mean.set_ylabel(f"ADC ({'baseline-subtracted' if waveform=='sub' else 'raw'})")
-    ax_mean.grid(True, alpha=0.25)
+        ax_mean.plot(t, mean, linewidth=2.0)
+        ax_mean.axvline(0, linestyle="--", linewidth=1)
+        if show_mean_band:
+            ax_mean.fill_between(t, mean - std, mean + std, alpha=0.15)
+        ax_mean.set_title("Mean pulse (±1σ)" if show_mean_band else "Mean pulse")
+        ax_mean.set_xlabel("Samples relative to window center (0)")
+        ax_mean.set_ylabel(f"ADC ({'baseline-subtracted' if waveform=='sub' else 'raw'})")
+        ax_mean.grid(True, alpha=0.25)
 
-    if title is None:
-        title = f"Selected pulses | wf={waveform} | pos={pos_key} | N={len(windows)}"
-        if pos_side != "none":
-            title += f" | {pos_side} {pos_cut}"
-        if amp_side != "none":
-            title += f" | {amp_source} {amp_side} {amp_cut}"
-        if ADCsat is not None:
-            title += f" | {sat_source}<{ADCsat}"
-    ax_all.set_title(title)
+        if title is None:
+            title = f"Selected pulses | wf={waveform} | pos={pos_key} | N={len(windows)}"
+            if pos_side != "none":
+                title += f" | {pos_side} {pos_cut}"
+            if amp_side != "none":
+                title += f" | {amp_source} {amp_side} {amp_cut}"
+            if ADCsat is not None:
+                title += f" | {sat_source}<{ADCsat}"
+        ax_all.set_title(title)
+        plt.show()
 
-    plt.show()
-    return windows, meta
+    return windows, meta, mean, std
 
 def plot_peak_position_histogram(
     pulse_ds,
