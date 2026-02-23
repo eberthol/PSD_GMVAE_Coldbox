@@ -3,4 +3,8 @@
 *.npz
 *.png
 
+
+__pycache__
 data_eng/WhereToStart.ipynb
+HowToReadRawData.ipynb
+STATUS.txt
