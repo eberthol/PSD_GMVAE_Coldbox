@@ -67,8 +67,23 @@ class AlignConfig:
 
 @dataclass(frozen=True)
 class WindowConfig:
-    pre: int = 40                    # samples before anchor
-    post: int = 200                  # samples after anchor
+    # pre: int = 40                    # samples before anchor
+    # post: int = 200                  # samples after anchor
+    ## version 1
+    # pre: int = 10                    # v1
+    # post: int = 128                  # v1
+    ## version 2
+    # pre: int = 20                  # v2
+    # post: int = 320                # v2
+    ## version 3
+    # pre: int = 20                 # v3
+    # post: int = 500                # v3
+    ## version 4
+    # pre: int = 30                 # v4
+    # post: int = 530               # v4
+    ## version 5
+    pre: int = 20                 # v5
+    post: int = 250               # v5
     anchor: str = "cfd"             # "peak" or "cfd" (must match AlignConfig.mode if using cfd)
 
 
@@ -169,7 +184,7 @@ def safe_slice(x: np.ndarray, lo: int, hi: int) -> Optional[np.ndarray]:
 
 def area_trapz(y: np.ndarray) -> float:
     # sample spacing cancels out in ratios; keep in samples unless dt_ns used elsewhere
-    return float(np.trapz(y))
+    return float(np.trapezoid(y))
 
 
 def compute_rise_time(y: np.ndarray, peak_idx: int, frac_lo: float = 0.1, frac_hi: float = 0.9, search_back: int = 800) -> Optional[int]:
@@ -403,20 +418,122 @@ def roc_auc_from_scores(y_true: np.ndarray, score: np.ndarray) -> float:
     return float(auc)
 
 
-def scan_parameters(wfs: np.ndarray, base_cfg: Config, grid: Dict[str, List[float | int]], limit_records: Optional[int]) -> pd.DataFrame:
+# def scan_parameters(wfs: np.ndarray, base_cfg: Config, grid: Dict[str, List[float | int]], limit_records: Optional[int]) -> pd.DataFrame:
+#     """
+#     Scan a small grid of parameters and score them by how well they separate early vs late pulses.
+#     Proxy labels:
+#       early = peak_idx < early_fraction * n_samples  (PNS-rich)
+#       late  = peak_idx > (1 - late_fraction) * n_samples (background-rich)
+#     Score: AUC using TTR as score (higher TTR tends to be neutron-like in many scintillators,
+#     but we do NOT assume direction; we take max(AUC, 1-AUC) to make it direction-free).
+#     """
+#     n_samples = wfs.shape[1]
+#     early_cut = int(base_cfg.scan_proxy.early_fraction * n_samples)
+#     late_cut = int((1.0 - base_cfg.scan_proxy.late_fraction) * n_samples)
+
+#     # Build cartesian product of grid
+#     keys = list(grid.keys())
+#     values = [grid[k] for k in keys]
+
+#     results = []
+#     for combo in tqdm(list(product(*values)), desc="Scan points"):
+#         cfg_dict = asdict(base_cfg)
+
+#         # apply combo
+#         for k, v in zip(keys, combo):
+#             # support dotted keys like "window.pre"
+#             parts = k.split(".")
+#             d = cfg_dict
+#             for part in parts[:-1]:
+#                 d = d[part]
+#             d[parts[-1]] = v
+
+#         # rehydrate Config (dataclasses) from dict
+#         cfg = Config(
+#             baseline=BaselineConfig(**cfg_dict["baseline"]),
+#             peak=PeakFindConfig(**cfg_dict["peak"]),
+#             align=AlignConfig(**cfg_dict["align"]),
+#             window=WindowConfig(**cfg_dict["window"]),
+#             cuts=CutsConfig(**cfg_dict["cuts"]),
+#             scan_proxy=ScanProxyConfig(**cfg_dict["scan_proxy"]),
+#             dt_ns=cfg_dict.get("dt_ns", None),
+#         )
+
+#         df = build_feature_table(wfs, cfg, limit_records=limit_records)
+#         if len(df) < cfg.scan_proxy.min_pulses_total:
+#             continue
+
+#         # early/late labeling
+#         y_true = np.full(len(df), -1, dtype=int)
+#         y_true[df["peak_idx"].to_numpy() < early_cut] = 1
+#         y_true[df["peak_idx"].to_numpy() > late_cut] = 0
+#         keep = y_true >= 0
+#         y_true = y_true[keep]
+#         if len(y_true) < cfg.scan_proxy.min_pulses_total:
+#             continue
+
+#         # require per-class counts
+#         n_pos = int(np.sum(y_true == 1))
+#         n_neg = int(np.sum(y_true == 0))
+#         if n_pos < cfg.scan_proxy.min_pulses_per_class or n_neg < cfg.scan_proxy.min_pulses_per_class:
+#             continue
+
+#         score = df.loc[keep, "ttr"].to_numpy()
+#         # remove NaNs
+#         m = np.isfinite(score)
+#         y2 = y_true[m]
+#         s2 = score[m]
+#         if len(s2) < cfg.scan_proxy.min_pulses_total:
+#             continue
+
+#         auc = roc_auc_from_scores(y2, s2)
+#         auc_dirfree = float(max(auc, 1.0 - auc)) if np.isfinite(auc) else np.nan
+
+#         kept = len(df)
+#         pileup_frac = float(np.mean(df["is_pileup"].to_numpy())) if kept else np.nan
+
+#         res = dict(
+#             auc_ttr=auc_dirfree,
+#             pulses_kept=kept,
+#             pileup_frac=pileup_frac,
+#             early_cut=early_cut,
+#             late_cut=late_cut,
+#         )
+#         for k, v in zip(keys, combo):
+#             res[k] = v
+#         results.append(res)
+
+#     out = pd.DataFrame(results).sort_values(["auc_ttr", "pulses_kept"], ascending=[False, False])
+#     return out
+
+def scan_parameters(
+    wfs: np.ndarray,
+    base_cfg: Config,
+    grid: Dict[str, List[float | int]],
+    limit_records: Optional[int],
+) -> pd.DataFrame:
     """
-    Scan a small grid of parameters and score them by how well they separate early vs late pulses.
+    Scan a grid of parameters and score them by how well they separate early vs late pulses.
+
     Proxy labels:
       early = peak_idx < early_fraction * n_samples  (PNS-rich)
       late  = peak_idx > (1 - late_fraction) * n_samples (background-rich)
-    Score: AUC using TTR as score (higher TTR tends to be neutron-like in many scintillators,
-    but we do NOT assume direction; we take max(AUC, 1-AUC) to make it direction-free).
+
+    Base separation metric:
+      AUC of TTR as a score (direction-free: max(AUC, 1-AUC))
+
+    Added diagnostics (to avoid pathological window choices):
+      - tail_ok_frac: fraction of pulses with *usable tail* (enough room after peak + finite, nonzero TTR)
+      - rise_ok_frac: fraction of pulses where peak is not too close to the left window edge
+      - score = auc_dirfree * tail_ok_frac * rise_ok_frac
+
+    Output is sorted by score, then pulses_kept.
     """
     n_samples = wfs.shape[1]
     early_cut = int(base_cfg.scan_proxy.early_fraction * n_samples)
     late_cut = int((1.0 - base_cfg.scan_proxy.late_fraction) * n_samples)
 
-    # Build cartesian product of grid
+    # Cartesian product of grid
     keys = list(grid.keys())
     values = [grid[k] for k in keys]
 
@@ -424,16 +541,15 @@ def scan_parameters(wfs: np.ndarray, base_cfg: Config, grid: Dict[str, List[floa
     for combo in tqdm(list(product(*values)), desc="Scan points"):
         cfg_dict = asdict(base_cfg)
 
-        # apply combo
+        # apply combo (supports dotted keys like "window.pre")
         for k, v in zip(keys, combo):
-            # support dotted keys like "window.pre"
             parts = k.split(".")
             d = cfg_dict
             for part in parts[:-1]:
                 d = d[part]
             d[parts[-1]] = v
 
-        # rehydrate Config (dataclasses) from dict
+        # rehydrate Config
         cfg = Config(
             baseline=BaselineConfig(**cfg_dict["baseline"]),
             peak=PeakFindConfig(**cfg_dict["peak"]),
@@ -445,17 +561,21 @@ def scan_parameters(wfs: np.ndarray, base_cfg: Config, grid: Dict[str, List[floa
         )
 
         df = build_feature_table(wfs, cfg, limit_records=limit_records)
-        if len(df) < cfg.scan_proxy.min_pulses_total:
+        kept = len(df)
+        if kept < cfg.scan_proxy.min_pulses_total:
             continue
 
         # early/late labeling
-        y_true = np.full(len(df), -1, dtype=int)
-        y_true[df["peak_idx"].to_numpy() < early_cut] = 1
-        y_true[df["peak_idx"].to_numpy() > late_cut] = 0
+        y_true = np.full(kept, -1, dtype=int)
+        peak_idx = df["peak_idx"].to_numpy()
+        y_true[peak_idx < early_cut] = 1
+        y_true[peak_idx > late_cut] = 0
+
         keep = y_true >= 0
-        y_true = y_true[keep]
-        if len(y_true) < cfg.scan_proxy.min_pulses_total:
+        if int(np.sum(keep)) < cfg.scan_proxy.min_pulses_total:
             continue
+
+        y_true = y_true[keep]
 
         # require per-class counts
         n_pos = int(np.sum(y_true == 1))
@@ -463,34 +583,70 @@ def scan_parameters(wfs: np.ndarray, base_cfg: Config, grid: Dict[str, List[floa
         if n_pos < cfg.scan_proxy.min_pulses_per_class or n_neg < cfg.scan_proxy.min_pulses_per_class:
             continue
 
-        score = df.loc[keep, "ttr"].to_numpy()
-        # remove NaNs
-        m = np.isfinite(score)
-        y2 = y_true[m]
-        s2 = score[m]
-        if len(s2) < cfg.scan_proxy.min_pulses_total:
+        # scores = ttr
+        ttr = df.loc[keep, "ttr"].to_numpy()
+        finite = np.isfinite(ttr)
+        if int(np.sum(finite)) < cfg.scan_proxy.min_pulses_total:
             continue
+
+        y2 = y_true[finite]
+        s2 = ttr[finite]
 
         auc = roc_auc_from_scores(y2, s2)
         auc_dirfree = float(max(auc, 1.0 - auc)) if np.isfinite(auc) else np.nan
+        if not np.isfinite(auc_dirfree):
+            continue
 
-        kept = len(df)
+        # --------- Added diagnostics ----------
+        # Peak position inside window
+        lo = df.loc[keep, "lo"].to_numpy()[finite]
+        hi = df.loc[keep, "hi"].to_numpy()[finite]
+        pk = df.loc[keep, "peak_idx"].to_numpy()[finite]
+
+        peak_rel = pk - lo                  # samples from window start to peak
+        right_margin = hi - pk              # samples from peak to window end
+
+        # Heuristics: require some baseline before rise, and enough samples after peak for tail.
+        # (These are intentionally simple and robust.)
+        min_pre_margin = max(10, int(0.25 * cfg.window.pre))     # at least 10 samples before peak
+        min_tail_margin = max(80, int(0.40 * cfg.window.post))   # at least ~80 samples after peak
+
+        rise_ok = peak_rel >= min_pre_margin
+
+        # Tail is "ok" if there's enough room after peak AND TTR is positive (not zero-floor)
+        tail_ok = (right_margin >= min_tail_margin) & (s2 > 0)
+
+        rise_ok_frac = float(np.mean(rise_ok)) if len(rise_ok) else np.nan
+        tail_ok_frac = float(np.mean(tail_ok)) if len(tail_ok) else np.nan
+
+        # Composite score: separation * usability
+        score = float(auc_dirfree * rise_ok_frac * tail_ok_frac)
+        # -------------------------------------
+
         pileup_frac = float(np.mean(df["is_pileup"].to_numpy())) if kept else np.nan
+        sat_frac = float(np.mean(df["is_saturated"].to_numpy())) if ("is_saturated" in df.columns and kept) else np.nan
 
         res = dict(
+            score=score,
             auc_ttr=auc_dirfree,
+            rise_ok_frac=rise_ok_frac,
+            tail_ok_frac=tail_ok_frac,
             pulses_kept=kept,
+            pulses_used=int(np.sum(keep) if keep is not None else 0),
             pileup_frac=pileup_frac,
+            sat_frac=sat_frac,
             early_cut=early_cut,
             late_cut=late_cut,
+            min_pre_margin=min_pre_margin,
+            min_tail_margin=min_tail_margin,
         )
         for k, v in zip(keys, combo):
             res[k] = v
+
         results.append(res)
 
-    out = pd.DataFrame(results).sort_values(["auc_ttr", "pulses_kept"], ascending=[False, False])
+    out = pd.DataFrame(results).sort_values(["score", "pulses_kept"], ascending=[False, False])
     return out
-
 
 # -----------------------------
 # CLI
