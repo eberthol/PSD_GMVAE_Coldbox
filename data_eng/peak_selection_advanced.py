@@ -19,6 +19,7 @@ This is meant to be a clean starting point. Tune defaults in Config below.
 """
 from __future__ import annotations
 
+import sys
 import argparse
 import json
 from dataclasses import dataclass, asdict
@@ -46,6 +47,7 @@ class BaselineConfig:
     drift_chunk: int = 2000            # samples per chunk
     drift_percentile: float = 10.0
     drift_ptp_threshold: float = 50.0  # ADC counts peak-to-peak across chunks
+    store_baseline_interpolation: bool = True # save baseline subtracted waveforms (same format as inuput file)
 
 
 @dataclass(frozen=True)
@@ -82,9 +84,9 @@ class WindowConfig:
     # pre: int = 30                 # v4
     # post: int = 530               # v4
     ## version 5
-    pre: int = 20                 # v5
-    post: int = 250               # v5
-    anchor: str = "cfd"             # "peak" or "cfd" (must match AlignConfig.mode if using cfd)
+    pre: int = 20                  # v5
+    post: int = 250                # v5
+    anchor: str = "cfd"            # "peak" or "cfd" (must match AlignConfig.mode if using cfd)
 
 
 @dataclass(frozen=True)
@@ -100,7 +102,7 @@ class CutsConfig:
     # Pile-up flagging: second peak above a fraction of primary within the window
     pileup_secondary_frac: float = 0.20
     pileup_secondary_min_sigma: float = 5.0
-    # Shape sanity: rise-time bounds in samples (computed 10%->90%)
+    # Shape sanity: rise-time basebounds in samples (computed 10%->90%)
     enable_risetime_cut: bool = True
     rise_min: int = 1
     rise_max: int = 400
@@ -124,6 +126,7 @@ class Config:
     window: WindowConfig = WindowConfig()
     cuts: CutsConfig = CutsConfig()
     scan_proxy: ScanProxyConfig = ScanProxyConfig()
+    baseline_filename: str = None
 
     # If you know dt (ns/sample), set it. Otherwise leave None and features remain in samples.
     dt_ns: Optional[float] = None
@@ -228,7 +231,7 @@ def preprocess_record(x: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Dict[str,
 
     if cfg.baseline.enable_drift_check:
         bchunks = estimate_baseline_chunks(x, chunk=cfg.baseline.drift_chunk, q=cfg.baseline.drift_percentile)
-        drift_ptp = float(np.ptp(bchunks)) if len(bchunks) else 0.0
+        drift_ptp = float(np.ptp(bchunks)) if len(bchunks) else 0.0 # np.ptp returns peak-to-peak values in an array along a specific axis
         drift_flag = drift_ptp > cfg.baseline.drift_ptp_threshold
         baseline_per_sample = interpolate_baseline_chunks(bchunks, n_samples=len(x), chunk=cfg.baseline.drift_chunk)
         y = x.astype(np.float64) - baseline_per_sample
@@ -374,9 +377,18 @@ def build_feature_table(wfs: np.ndarray, cfg: Config, limit_records: Optional[in
         pulses_kept=0,
     )
 
+    dtype = np.float32
+    baseline_interpolations = [] if cfg.baseline.store_baseline_interpolation else None
+
+    # print(cfg.baseline_filename)
+    # sys.exit()
+
     for i in tqdm(range(nrec), desc="Records"):
         x = wfs[i]
         y, diag = preprocess_record(x, cfg)
+
+        if cfg.baseline.store_baseline_interpolation: baseline_interpolations.append(y.astype(dtype, copy=False))
+
         if diag["drift_flag"] > 0.5:
             cutflow["records_drift_flagged"] += 1
 
@@ -390,7 +402,11 @@ def build_feature_table(wfs: np.ndarray, cfg: Config, limit_records: Optional[in
             feat.update(diag)
             rows.append(feat)
             cutflow["pulses_kept"] += 1
-
+    if cfg.baseline.store_baseline_interpolation:
+        np.savez(
+            cfg.baseline_filename,
+            wfs_sub=baseline_interpolations,
+        )
     df = pd.DataFrame(rows)
     df.attrs["cutflow"] = cutflow
     df.attrs["config"] = asdict(cfg)
@@ -416,95 +432,6 @@ def roc_auc_from_scores(y_true: np.ndarray, score: np.ndarray) -> float:
     n_neg = float(len(neg))
     auc = (sum_ranks_pos - n_pos * (n_pos + 1.0) / 2.0) / (n_pos * n_neg)
     return float(auc)
-
-
-# def scan_parameters(wfs: np.ndarray, base_cfg: Config, grid: Dict[str, List[float | int]], limit_records: Optional[int]) -> pd.DataFrame:
-#     """
-#     Scan a small grid of parameters and score them by how well they separate early vs late pulses.
-#     Proxy labels:
-#       early = peak_idx < early_fraction * n_samples  (PNS-rich)
-#       late  = peak_idx > (1 - late_fraction) * n_samples (background-rich)
-#     Score: AUC using TTR as score (higher TTR tends to be neutron-like in many scintillators,
-#     but we do NOT assume direction; we take max(AUC, 1-AUC) to make it direction-free).
-#     """
-#     n_samples = wfs.shape[1]
-#     early_cut = int(base_cfg.scan_proxy.early_fraction * n_samples)
-#     late_cut = int((1.0 - base_cfg.scan_proxy.late_fraction) * n_samples)
-
-#     # Build cartesian product of grid
-#     keys = list(grid.keys())
-#     values = [grid[k] for k in keys]
-
-#     results = []
-#     for combo in tqdm(list(product(*values)), desc="Scan points"):
-#         cfg_dict = asdict(base_cfg)
-
-#         # apply combo
-#         for k, v in zip(keys, combo):
-#             # support dotted keys like "window.pre"
-#             parts = k.split(".")
-#             d = cfg_dict
-#             for part in parts[:-1]:
-#                 d = d[part]
-#             d[parts[-1]] = v
-
-#         # rehydrate Config (dataclasses) from dict
-#         cfg = Config(
-#             baseline=BaselineConfig(**cfg_dict["baseline"]),
-#             peak=PeakFindConfig(**cfg_dict["peak"]),
-#             align=AlignConfig(**cfg_dict["align"]),
-#             window=WindowConfig(**cfg_dict["window"]),
-#             cuts=CutsConfig(**cfg_dict["cuts"]),
-#             scan_proxy=ScanProxyConfig(**cfg_dict["scan_proxy"]),
-#             dt_ns=cfg_dict.get("dt_ns", None),
-#         )
-
-#         df = build_feature_table(wfs, cfg, limit_records=limit_records)
-#         if len(df) < cfg.scan_proxy.min_pulses_total:
-#             continue
-
-#         # early/late labeling
-#         y_true = np.full(len(df), -1, dtype=int)
-#         y_true[df["peak_idx"].to_numpy() < early_cut] = 1
-#         y_true[df["peak_idx"].to_numpy() > late_cut] = 0
-#         keep = y_true >= 0
-#         y_true = y_true[keep]
-#         if len(y_true) < cfg.scan_proxy.min_pulses_total:
-#             continue
-
-#         # require per-class counts
-#         n_pos = int(np.sum(y_true == 1))
-#         n_neg = int(np.sum(y_true == 0))
-#         if n_pos < cfg.scan_proxy.min_pulses_per_class or n_neg < cfg.scan_proxy.min_pulses_per_class:
-#             continue
-
-#         score = df.loc[keep, "ttr"].to_numpy()
-#         # remove NaNs
-#         m = np.isfinite(score)
-#         y2 = y_true[m]
-#         s2 = score[m]
-#         if len(s2) < cfg.scan_proxy.min_pulses_total:
-#             continue
-
-#         auc = roc_auc_from_scores(y2, s2)
-#         auc_dirfree = float(max(auc, 1.0 - auc)) if np.isfinite(auc) else np.nan
-
-#         kept = len(df)
-#         pileup_frac = float(np.mean(df["is_pileup"].to_numpy())) if kept else np.nan
-
-#         res = dict(
-#             auc_ttr=auc_dirfree,
-#             pulses_kept=kept,
-#             pileup_frac=pileup_frac,
-#             early_cut=early_cut,
-#             late_cut=late_cut,
-#         )
-#         for k, v in zip(keys, combo):
-#             res[k] = v
-#         results.append(res)
-
-#     out = pd.DataFrame(results).sort_values(["auc_ttr", "pulses_kept"], ascending=[False, False])
-#     return out
 
 def scan_parameters(
     wfs: np.ndarray,
@@ -715,7 +642,12 @@ def main() -> None:
         cuts=CutsConfig(**cfg_dict["cuts"]),
         scan_proxy=ScanProxyConfig(**cfg_dict["scan_proxy"]),
         dt_ns=cfg_dict.get("dt_ns", None),
+        baseline_filename=str(inp).replace('.npz', '_baselineSub.npz')
     )
+
+    # print(cfg.baseline.store_baseline_interpolation)
+    # print(cfg.baseline_filename)
+    # sys.exit()
 
     if args.scan:
         if args.grid is None:
@@ -753,3 +685,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# python peak_selection_advanced.py --input pns_r25036_chID1_0-99.npz --out pns_r25036_chID1_0-99_v5.parquet
+# python peak_selection_advanced.py --input cos_r25004_chID1_0-99.npz --out cos_r25004_chID1_0-99_v5.parquet
+
+# python peak_selection_advanced.py --input concatenated_raw_files/pns_r25036_chID1_100-219.npz --out pns_r25036_chID1_100-219_v5.parquet
+# python peak_selection_advanced.py --input concatenated_raw_files/cos_r25004_chID1_100-229.npz --out cos_r25004_chID1_100-229_v5.parquet
+
+

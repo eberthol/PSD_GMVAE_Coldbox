@@ -141,7 +141,7 @@ def build_pulse_dataset(
     # Storage
     store_raw_window: bool = True,
     store_sub_window: bool = True,
-    store_baseline_interpolation: bool = False,   # usually False (big); enable for debugging
+    store_baseline_interpolation: bool = True,   # usually False (big); enable for debugging
     dtype=np.float32,
 
     # Reporting
